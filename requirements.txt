@@ -1,7 +1,4 @@
-os
-socket
-subprocess
 colorama
-Tkinter
-cmd
-start
+paramiko
+scp
+rpyc
